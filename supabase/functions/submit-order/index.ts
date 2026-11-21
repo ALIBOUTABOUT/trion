@@ -192,78 +192,15 @@ serve(async (req) => {
         .eq('id', vi.variant_id);
     }
 
-    // 7. Secure WhatsApp Cloud API Notification
-    let whatsappSuccess = false;
-    try {
-      const waPhoneNumberId = Deno.env.get('WHATSAPP_PHONE_NUMBER_ID');
-      const waAccessToken = Deno.env.get('WHATSAPP_ACCESS_TOKEN');
-      const waRecipient = Deno.env.get('WHATSAPP_RECIPIENT_NUMBER');
-
-      if (waPhoneNumberId && waAccessToken && waRecipient) {
-        // Build items summary in Arabic
-        const itemsSummary = validatedItems
-          .map((i) => `• ${i.product_name} (${i.color} - ${i.size}) × ${i.quantity} = ${i.total_price} DA`)
-          .join('\n');
-
-        const messageBody = 
-`🛍️ *طلب جديد في TRION.WEAR.OFF*
-━━━━━━━━━━━━━━━━━
-🔢 *رقم الطلب:* ${orderNumber}
-👤 *العميل:* ${customer.full_name}
-📞 *الهاتف:* ${customer.phone}
-📍 *الولاية:* ${customer.wilaya}
-🏙️ *البلدية:* ${customer.commune}
-🏠 *العنوان:* ${customer.address}
-${customer.notes ? `📝 *ملاحظات:* ${customer.notes}\n` : ''}
-📦 *المنتجات المطلوبة:*
-${itemsSummary}
-
-💵 *المجموع الفرعي:* ${subtotal} DA
-🚚 *رسوم التوصيل:* ${deliveryFee} DA
-💰 *الإجمالي المستحق:* ${total} DA
-💳 *طريقة الدفع:* الدفع عند الاستلام (COD)
-━━━━━━━━━━━━━━━━━`;
-
-        const waResponse = await fetch(
-          `https://graph.facebook.com/v18.0/${waPhoneNumberId}/messages`,
-          {
-            method: 'POST',
-            headers: {
-              'Authorization': `Bearer ${waAccessToken}`,
-              'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-              messaging_product: 'whatsapp',
-              recipient_type: 'individual',
-              to: waRecipient.replace('+', '').trim(),
-              type: 'text',
-              text: { preview_url: false, body: messageBody },
-            }),
-          }
-        );
-
-        if (waResponse.ok) {
-          whatsappSuccess = true;
-          await supabase.from('orders').update({ whatsapp_sent: true }).eq('id', orderRecord.id);
-        } else {
-          const errData = await waResponse.text();
-          console.error('[WhatsApp Cloud API] Notification returned error:', errData);
-          // Do not throw! The order is saved and confirmed.
-        }
-      } else {
-        console.warn('[WhatsApp] Credentials not configured in Supabase Edge Function Secrets. Skipping notification.');
-      }
-    } catch (waErr) {
-      console.error('[WhatsApp] Exception during notification:', waErr);
-      // Order is safely stored in database; proceed to send success response to customer.
-    }
+    // 7. Order saved. Realtime will push the new order to the Admin Dashboard automatically.
+    // WhatsApp Cloud API notification has been removed — the Admin Dashboard is the primary
+    // notification and order management system.
 
     return new Response(
       JSON.stringify({
         success: true,
         order_number: orderNumber,
         order_id: orderRecord.id,
-        whatsapp_sent: whatsappSuccess,
       }),
       {
         status: 200,

@@ -18,22 +18,22 @@ export function ContactPage() {
             {
               icon: Phone,
               label: 'الهاتف',
-              value: '+213 XXX XXX XXX',
-              href: 'tel:+213XXXXXXXXX',
+              value: '0557 91 92 24',
+              href: 'tel:+213557919224',
               desc: 'متاح من 9ص إلى 9م',
             },
             {
               icon: MessageCircle,
               label: 'واتساب',
-              value: 'تواصل عبر واتساب',
-              href: 'https://wa.me/213XXXXXXXXX',
+              value: '0557 91 92 24',
+              href: 'https://wa.me/213557919224',
               desc: 'للاستفسارات والمتابعة',
             },
             {
               icon: Instagram,
               label: 'إنستغرام',
-              value: '@trionwearoff',
-              href: 'https://instagram.com/trionwearoff',
+              value: '@trion.wear.off',
+              href: 'https://instagram.com/trion.wear.off',
               desc: 'تابعنا للتحديثات والعروض',
             },
           ].map(({ icon: Icon, label, value, href, desc }) => (

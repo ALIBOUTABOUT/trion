@@ -44,24 +44,158 @@ export function getSettingValue(settings: StoreSettings[], key: string, defaultV
 }
 
 // ============================================================
-// Orders
+// Orders — Direct Supabase Insert (no Edge Function required)
 // ============================================================
+
+function generateOrderNumber(): string {
+  const timestamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
+  return `TWO-${timestamp}-${random}`;
+}
+
 export async function submitOrder(params: {
   customer: CheckoutFormData;
   items: CartItem[];
   deliveryFee: number;
 }): Promise<{ success: boolean; order_number: string; order_id: string }> {
   if (!isSupabaseConfigured()) {
-    // Mock success for development
     await new Promise((r) => setTimeout(r, 1200));
     return { success: true, order_number: 'TWO-DEMO-001', order_id: 'mock-order-id' };
   }
 
-  const { data, error } = await supabase.functions.invoke('submit-order', {
-    body: params,
-  });
-  if (error) throw new Error(error.message || 'فشل في إرسال الطلب');
-  return data as { success: boolean; order_number: string; order_id: string };
+  const { customer, items, deliveryFee } = params;
+
+  // ── Step 1: Fetch trusted prices & validate stock from DB ────────────────
+  const variantIds = items.map((i) => i.variant_id);
+  const { data: variants, error: varError } = await supabase
+    .from('product_variants')
+    .select('id, stock, price_adjustment, products(id, name, base_price, is_available)')
+    .in('id', variantIds);
+
+  if (varError || !variants || variants.length === 0) {
+    throw new Error('فشل التحقق من المنتجات — يرجى تحديث الصفحة والمحاولة مجدداً');
+  }
+
+  // Calculate trusted subtotal & validate stock
+  let subtotal = 0;
+  const validatedItems: Array<{
+    variant_id: string;
+    product_name: string;
+    color: string;
+    size: string;
+    quantity: number;
+    unit_price: number;
+    total_price: number;
+    new_stock: number;
+  }> = [];
+
+  for (const cartItem of items) {
+    const variant = variants.find((v: any) => v.id === cartItem.variant_id) as any;
+    if (!variant) throw new Error(`المنتج المحدد غير متوفر في قاعدة البيانات`);
+
+    const product = variant.products as any;
+    if (!product?.is_available) {
+      throw new Error(`المنتج "${product?.name || ''}" غير متاح للشراء حالياً`);
+    }
+    if (variant.stock < cartItem.quantity) {
+      throw new Error(
+        `الكمية المطلوبة من "${product.name}" غير متوفرة (المتبقي في المخزن: ${variant.stock})`
+      );
+    }
+
+    const unitPrice = Number(product.base_price) + Number(variant.price_adjustment);
+    const itemTotal = unitPrice * cartItem.quantity;
+    subtotal += itemTotal;
+
+    validatedItems.push({
+      variant_id: variant.id,
+      product_name: product.name,
+      color: cartItem.color,
+      size: cartItem.size,
+      quantity: cartItem.quantity,
+      unit_price: unitPrice,
+      total_price: itemTotal,
+      new_stock: variant.stock - cartItem.quantity,
+    });
+  }
+
+  const total = subtotal + Number(deliveryFee);
+  const orderNumber = generateOrderNumber();
+
+  // Generate UUIDs client-side so we never need to SELECT back from
+  // customers or orders (those tables have admin-only SELECT policies).
+  const customerId = crypto.randomUUID();
+  const orderId = crypto.randomUUID();
+
+  // ── Step 2: Insert Customer ──────────────────────────────────────────────
+  const { error: custError } = await supabase
+    .from('customers')
+    .insert({
+      id: customerId,
+      full_name: customer.full_name.trim(),
+      phone: customer.phone.trim(),
+      wilaya: customer.wilaya.trim(),
+      commune: customer.commune.trim(),
+      address: customer.address.trim(),
+    });
+
+  if (custError) {
+    throw new Error(`فشل تسجيل بيانات العميل: ${custError.message}`);
+  }
+
+  // ── Step 3: Insert Order ─────────────────────────────────────────────────
+  const { error: orderError } = await supabase
+    .from('orders')
+    .insert({
+      id: orderId,
+      order_number: orderNumber,
+      customer_id: customerId,
+      status: 'pending',
+      subtotal,
+      delivery_fee: Number(deliveryFee),
+      total,
+      payment_method: 'cod',
+      notes: customer.notes?.trim() || null,
+    });
+
+  if (orderError) {
+    throw new Error(`فشل إنشاء الطلب: ${orderError.message}`);
+  }
+
+  // ── Step 4: Insert Order Items ───────────────────────────────────────────
+  const { error: itemsError } = await supabase.from('order_items').insert(
+    validatedItems.map((vi) => ({
+      order_id: orderId,
+      variant_id: vi.variant_id,
+      product_name: vi.product_name,
+      color: vi.color,
+      size: vi.size,
+      quantity: vi.quantity,
+      unit_price: vi.unit_price,
+      total_price: vi.total_price,
+    }))
+  );
+
+  if (itemsError) {
+    throw new Error(`فشل حفظ تفاصيل الطلب: ${itemsError.message}`);
+  }
+
+  // ── Step 5: Deduct stock via SECURITY DEFINER function ──────────────────
+  // The anon key cannot UPDATE product_variants directly (RLS: admin-only).
+  // We call the `deduct_variant_stock` Postgres function which runs with
+  // elevated privileges and also prevents stock from going below zero.
+  for (const vi of validatedItems) {
+    const { error: stockErr } = await supabase.rpc('deduct_variant_stock', {
+      p_variant_id: vi.variant_id,
+      p_quantity: vi.quantity,
+    });
+    if (stockErr) {
+      console.warn('[stock deduction]', stockErr.message);
+      // Non-fatal: order is already saved. Admin can correct manually.
+    }
+  }
+
+  return { success: true, order_number: orderNumber, order_id: orderId };
 }
 
 // ============================================================

@@ -44,22 +44,22 @@ export function Footer() {
             <ul className="space-y-3">
               <li>
                 <a
-                  href="https://instagram.com/trionwearoff"
+                  href="https://instagram.com/trion.wear.off"
                   target="_blank"
                   rel="noopener noreferrer"
                   className="flex items-center gap-2 text-gray-500 hover:text-white transition-colors text-sm"
                 >
                   <Instagram size={16} />
-                  <span className="font-arabic">@trionwearoff</span>
+                  <span className="font-arabic">@trion.wear.off</span>
                 </a>
               </li>
               <li>
                 <a
-                  href="tel:+213XXXXXXXXX"
+                  href="tel:+213557919224"
                   className="flex items-center gap-2 text-gray-500 hover:text-white transition-colors text-sm"
                 >
                   <Phone size={16} />
-                  <span>+213 XXX XXX XXX</span>
+                  <span>0557 91 92 24</span>
                 </a>
               </li>
               <li className="flex items-center gap-2 text-gray-500 text-sm">

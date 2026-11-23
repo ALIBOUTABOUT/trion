@@ -44,158 +44,67 @@ export function getSettingValue(settings: StoreSettings[], key: string, defaultV
 }
 
 // ============================================================
-// Orders — Direct Supabase Insert (no Edge Function required)
+// Orders — Atomic PostgreSQL RPC Submission
 // ============================================================
-
-function generateOrderNumber(): string {
-  const timestamp = Date.now().toString(36).toUpperCase();
-  const random = Math.random().toString(36).substring(2, 6).toUpperCase();
-  return `TWO-${timestamp}-${random}`;
-}
 
 export async function submitOrder(params: {
   customer: CheckoutFormData;
   items: CartItem[];
-  deliveryFee: number;
-}): Promise<{ success: boolean; order_number: string; order_id: string }> {
+  deliveryFee?: number;
+}): Promise<{ success: boolean; order_number: string; order_id: string; total?: number }> {
   if (!isSupabaseConfigured()) {
-    await new Promise((r) => setTimeout(r, 1200));
+    await new Promise((r) => setTimeout(r, 800));
     return { success: true, order_number: 'TWO-DEMO-001', order_id: 'mock-order-id' };
   }
 
-  const { customer, items, deliveryFee } = params;
+  const { customer, items } = params;
 
-  // ── Step 1: Fetch trusted prices & validate stock from DB ────────────────
-  const variantIds = items.map((i) => i.variant_id);
-  const { data: variants, error: varError } = await supabase
-    .from('product_variants')
-    .select('id, stock, price_adjustment, products(id, name, base_price, is_available)')
-    .in('id', variantIds);
-
-  if (varError || !variants || variants.length === 0) {
-    throw new Error('فشل التحقق من المنتجات — يرجى تحديث الصفحة والمحاولة مجدداً');
+  if (!items || items.length === 0) {
+    throw new Error('سلة التسوق فارغة');
   }
 
-  // Calculate trusted subtotal & validate stock
-  let subtotal = 0;
-  const validatedItems: Array<{
-    variant_id: string;
-    product_name: string;
-    color: string;
-    size: string;
-    quantity: number;
-    unit_price: number;
-    total_price: number;
-    new_stock: number;
-  }> = [];
+  // Prepare payload for atomic PostgreSQL transaction
+  const payloadCustomer = {
+    full_name: customer.full_name.trim(),
+    phone: customer.phone.trim(),
+    wilaya: customer.wilaya.trim(),
+    commune: customer.commune.trim(),
+    address: customer.address.trim(),
+    notes: customer.notes?.trim() || null,
+  };
 
-  for (const cartItem of items) {
-    const variant = variants.find((v: any) => v.id === cartItem.variant_id) as any;
-    if (!variant) throw new Error(`المنتج المحدد غير متوفر في قاعدة البيانات`);
+  const payloadItems = items.map((item) => ({
+    variant_id: item.variant_id,
+    quantity: item.quantity,
+  }));
 
-    const product = variant.products as any;
-    if (!product?.is_available) {
-      throw new Error(`المنتج "${product?.name || ''}" غير متاح للشراء حالياً`);
-    }
-    if (variant.stock < cartItem.quantity) {
-      throw new Error(
-        `الكمية المطلوبة من "${product.name}" غير متوفرة (المتبقي في المخزن: ${variant.stock})`
-      );
-    }
+  // Call the atomic PostgreSQL RPC function
+  const { data, error } = await supabase.rpc('submit_order_atomic', {
+    p_customer: payloadCustomer,
+    p_items: payloadItems,
+  });
 
-    const unitPrice = Number(product.base_price) + Number(variant.price_adjustment);
-    const itemTotal = unitPrice * cartItem.quantity;
-    subtotal += itemTotal;
-
-    validatedItems.push({
-      variant_id: variant.id,
-      product_name: product.name,
-      color: cartItem.color,
-      size: cartItem.size,
-      quantity: cartItem.quantity,
-      unit_price: unitPrice,
-      total_price: itemTotal,
-      new_stock: variant.stock - cartItem.quantity,
-    });
+  if (error) {
+    console.error('[submit_order_atomic error]', error);
+    // Return friendly, localized error message
+    throw new Error(error.message || 'فشل إرسال الطلب، يرجى المحاولة لاحقاً');
   }
 
-  const total = subtotal + Number(deliveryFee);
-  const orderNumber = generateOrderNumber();
+  const result = data as {
+    success: boolean;
+    order_id: string;
+    order_number: string;
+    total: number;
+    subtotal: number;
+    delivery_fee: number;
+  };
 
-  // Generate UUIDs client-side so we never need to SELECT back from
-  // customers or orders (those tables have admin-only SELECT policies).
-  const customerId = crypto.randomUUID();
-  const orderId = crypto.randomUUID();
-
-  // ── Step 2: Insert Customer ──────────────────────────────────────────────
-  const { error: custError } = await supabase
-    .from('customers')
-    .insert({
-      id: customerId,
-      full_name: customer.full_name.trim(),
-      phone: customer.phone.trim(),
-      wilaya: customer.wilaya.trim(),
-      commune: customer.commune.trim(),
-      address: customer.address.trim(),
-    });
-
-  if (custError) {
-    throw new Error(`فشل تسجيل بيانات العميل: ${custError.message}`);
-  }
-
-  // ── Step 3: Insert Order ─────────────────────────────────────────────────
-  const { error: orderError } = await supabase
-    .from('orders')
-    .insert({
-      id: orderId,
-      order_number: orderNumber,
-      customer_id: customerId,
-      status: 'pending',
-      subtotal,
-      delivery_fee: Number(deliveryFee),
-      total,
-      payment_method: 'cod',
-      notes: customer.notes?.trim() || null,
-    });
-
-  if (orderError) {
-    throw new Error(`فشل إنشاء الطلب: ${orderError.message}`);
-  }
-
-  // ── Step 4: Insert Order Items ───────────────────────────────────────────
-  const { error: itemsError } = await supabase.from('order_items').insert(
-    validatedItems.map((vi) => ({
-      order_id: orderId,
-      variant_id: vi.variant_id,
-      product_name: vi.product_name,
-      color: vi.color,
-      size: vi.size,
-      quantity: vi.quantity,
-      unit_price: vi.unit_price,
-      total_price: vi.total_price,
-    }))
-  );
-
-  if (itemsError) {
-    throw new Error(`فشل حفظ تفاصيل الطلب: ${itemsError.message}`);
-  }
-
-  // ── Step 5: Deduct stock via SECURITY DEFINER function ──────────────────
-  // The anon key cannot UPDATE product_variants directly (RLS: admin-only).
-  // We call the `deduct_variant_stock` Postgres function which runs with
-  // elevated privileges and also prevents stock from going below zero.
-  for (const vi of validatedItems) {
-    const { error: stockErr } = await supabase.rpc('deduct_variant_stock', {
-      p_variant_id: vi.variant_id,
-      p_quantity: vi.quantity,
-    });
-    if (stockErr) {
-      console.warn('[stock deduction]', stockErr.message);
-      // Non-fatal: order is already saved. Admin can correct manually.
-    }
-  }
-
-  return { success: true, order_number: orderNumber, order_id: orderId };
+  return {
+    success: true,
+    order_number: result.order_number,
+    order_id: result.order_id,
+    total: result.total,
+  };
 }
 
 // ============================================================
@@ -288,6 +197,17 @@ export async function deleteVariant(id: string): Promise<void> {
 }
 
 export async function uploadProductImage(file: File): Promise<string> {
+  const ALLOWED_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
+  const MAX_SIZE = 5 * 1024 * 1024; // 5 MB
+
+  if (!ALLOWED_TYPES.includes(file.type)) {
+    throw new Error('نوع الملف غير مدعوم. يرجى رفع صورة بصيغة JPG أو PNG أو WEBP');
+  }
+
+  if (file.size > MAX_SIZE) {
+    throw new Error('حجم الصورة كبير جداً (الحد الأقصى 5 ميغابايت)');
+  }
+
   const fileExt = file.name.split('.').pop();
   const fileName = `${Date.now()}-${Math.random().toString(36).slice(2)}.${fileExt}`;
   const { error } = await supabase.storage.from('product-images').upload(fileName, file);

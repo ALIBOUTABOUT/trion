@@ -11,6 +11,9 @@ import { CheckoutPage } from './pages/CheckoutPage';
 import { AboutPage } from './pages/AboutPage';
 import { ContactPage } from './pages/ContactPage';
 import { NotFoundPage } from './pages/NotFoundPage';
+import { PrivacyPolicyPage } from './pages/PrivacyPolicyPage';
+import { TermsPage } from './pages/TermsPage';
+import { ReturnPolicyPage } from './pages/ReturnsPage';
 
 // Admin layout & pages
 import { AdminLayout } from './components/layout/AdminLayout';
@@ -34,6 +37,9 @@ export default function App() {
             <Route path="/checkout" element={<CheckoutPage />} />
             <Route path="/about" element={<AboutPage />} />
             <Route path="/contact" element={<ContactPage />} />
+            <Route path="/privacy" element={<PrivacyPolicyPage />} />
+            <Route path="/terms" element={<TermsPage />} />
+            <Route path="/returns" element={<ReturnPolicyPage />} />
           </Route>
 
           {/* Admin Authentication */}
